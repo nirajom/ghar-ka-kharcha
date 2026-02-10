@@ -853,6 +853,47 @@ $totalSpent = (float)$stmt->fetch(PDO::FETCH_ASSOC)['t'];
 
 $poolLeft = $totalContrib - $totalSpent;
 
+// DASHBOARD GRAPH DATA (same DB, read-only)
+$monthlyStats = [];
+$mStmt = $db->query("SELECT substr(date,1,7) AS ym, COALESCE(SUM(amount),0) AS total FROM contributions GROUP BY ym ORDER BY ym DESC LIMIT 6");
+while ($row = $mStmt->fetch(PDO::FETCH_ASSOC)) {
+    if (!empty($row['ym'])) {
+        $monthlyStats[$row['ym']]['contrib'] = (float)$row['total'];
+    }
+}
+
+$mStmt = $db->query("SELECT substr(date,1,7) AS ym, COALESCE(SUM(amount),0) AS total FROM expenses GROUP BY ym ORDER BY ym DESC LIMIT 6");
+while ($row = $mStmt->fetch(PDO::FETCH_ASSOC)) {
+    if (!empty($row['ym'])) {
+        $monthlyStats[$row['ym']]['spent'] = (float)$row['total'];
+    }
+}
+
+ksort($monthlyStats);
+$monthlyStats = array_slice($monthlyStats, -6, null, true);
+$maxChartValue = 1;
+foreach ($monthlyStats as $v) {
+    $c = $v['contrib'] ?? 0;
+    $s = $v['spent'] ?? 0;
+    $maxChartValue = max($maxChartValue, $c, $s);
+}
+
+$balanceRows = [];
+$maxAbsBalance = 1;
+foreach ($members as $m) {
+    $mid = (int)$m['id'];
+    $given = (float)($contribTotals[$mid] ?? 0);
+    $used = (float)($shareTotals[$mid] ?? 0);
+    $balance = $given - $used;
+    $maxAbsBalance = max($maxAbsBalance, abs($balance));
+    $balanceRows[] = [
+        'name' => $m['name'],
+        'given' => $given,
+        'used' => $used,
+        'balance' => $balance
+    ];
+}
+
 // RECENT
 $recentContrib = $db->query("
     SELECT c.*, m.name AS member_name
@@ -1084,6 +1125,43 @@ if ($reportIsHouse || $reportMemberId > 0) {
         .meter-title { font-size:13px; font-weight:bold; color:var(--text); margin-bottom:4px; }
         .inline-row { display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; }
         .inline-row > div { flex:1 1 140px; }
+        .hero-grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+        .metric-card { background: linear-gradient(160deg, rgba(30,41,59,0.8), rgba(15,23,42,0.9)); border:1px solid var(--border); border-radius:12px; padding:14px; }
+        .metric-card .label { font-size:12px; color:var(--text-muted); margin-bottom:6px; }
+        .metric-card .value { font-size:24px; font-weight:700; }
+        .chart-wrap { overflow-x:auto; margin-top:10px; padding-bottom:4px; }
+        .bar-chart { display:flex; align-items:flex-end; gap:14px; min-height:220px; padding:12px 8px 4px; }
+        .month-group { width:90px; display:flex; flex-direction:column; align-items:center; }
+        .bars { width:100%; height:170px; display:flex; align-items:flex-end; justify-content:center; gap:8px; }
+        .bar { width:26px; border-radius:8px 8px 4px 4px; position:relative; }
+        .bar.contrib { background: linear-gradient(180deg, #60a5fa, #2563eb); }
+        .bar.spent { background: linear-gradient(180deg, #f97316, #ea580c); }
+        .bar:hover::after {
+            content: attr(data-value);
+            position:absolute;
+            top:-26px;
+            left:50%;
+            transform:translateX(-50%);
+            background:#0f172a;
+            color:#e5e7eb;
+            border:1px solid var(--border);
+            border-radius:6px;
+            padding:2px 6px;
+            font-size:11px;
+            white-space:nowrap;
+        }
+        .month-label { margin-top:8px; font-size:12px; color:var(--text-muted); }
+        .legend { display:flex; gap:12px; flex-wrap:wrap; margin-top:8px; }
+        .legend span { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--text-muted); }
+        .dot { width:10px; height:10px; border-radius:999px; display:inline-block; }
+        .dot-blue { background:#3b82f6; }
+        .dot-orange { background:#f97316; }
+        .balance-bars { margin-top:10px; }
+        .balance-row { display:grid; grid-template-columns: 110px 1fr 80px; gap:10px; align-items:center; margin:8px 0; }
+        .balance-track { background:#111827; border:1px solid var(--border); border-radius:999px; height:10px; overflow:hidden; }
+        .balance-fill { height:100%; border-radius:999px; }
+        .balance-fill.pos { background:linear-gradient(90deg,#22c55e,#16a34a); }
+        .balance-fill.neg { background:linear-gradient(90deg,#fb923c,#ea580c); }
     </style>
 </head>
 <body>
@@ -1111,10 +1189,65 @@ if ($reportIsHouse || $reportMemberId > 0) {
 
     <!-- SUMMARY -->
     <div class="card">
-        <h2>Summary</h2>
-        <p>Total Pool Add (sab ka milake): <strong><?php echo number_format($totalContrib, 2); ?></strong> ₹</p>
-        <p>Total Spent (grocery, etc.): <strong><?php echo number_format($totalSpent, 2); ?></strong> ₹</p>
-        <p>Pool Left (bacha hua): <strong><?php echo number_format($poolLeft, 2); ?></strong> ₹</p>
+        <h2>Dashboard Summary</h2>
+        <div class="hero-grid">
+            <div class="metric-card">
+                <div class="label">Total Pool Add</div>
+                <div class="value">₹<?php echo number_format($totalContrib, 2); ?></div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Total Spent</div>
+                <div class="value">₹<?php echo number_format($totalSpent, 2); ?></div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Pool Left</div>
+                <div class="value <?php echo $poolLeft >= 0 ? 'amount-pos' : 'amount-neg'; ?>">₹<?php echo number_format($poolLeft, 2); ?></div>
+            </div>
+        </div>
+
+        <h2 style="margin-top:16px;">Simulated Graph View (last months)</h2>
+        <?php if (!empty($monthlyStats)): ?>
+            <div class="chart-wrap">
+                <div class="bar-chart">
+                    <?php foreach ($monthlyStats as $month => $vals):
+                        $contrib = (float)($vals['contrib'] ?? 0);
+                        $spent = (float)($vals['spent'] ?? 0);
+                        $contribH = (int)max(8, round(($contrib / $maxChartValue) * 170));
+                        $spentH = (int)max(8, round(($spent / $maxChartValue) * 170));
+                    ?>
+                    <div class="month-group">
+                        <div class="bars">
+                            <div class="bar contrib" style="height:<?php echo $contribH; ?>px" data-value="In: ₹<?php echo number_format($contrib, 0); ?>"></div>
+                            <div class="bar spent" style="height:<?php echo $spentH; ?>px" data-value="Out: ₹<?php echo number_format($spent, 0); ?>"></div>
+                        </div>
+                        <div class="month-label"><?php echo h($month); ?></div>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+            <div class="legend">
+                <span><i class="dot dot-blue"></i> Contribution</span>
+                <span><i class="dot dot-orange"></i> Expense</span>
+            </div>
+        <?php else: ?>
+            <small class="muted">Graph show karne ke liye monthly entries add honi chahiye.</small>
+        <?php endif; ?>
+
+        <h2 style="margin-top:16px;">Member Balance Snapshot</h2>
+        <div class="balance-bars">
+            <?php foreach ($balanceRows as $br):
+                $w = (int)max(2, round((abs($br['balance']) / $maxAbsBalance) * 100));
+            ?>
+                <div class="balance-row">
+                    <small><?php echo h($br['name']); ?></small>
+                    <div class="balance-track">
+                        <div class="balance-fill <?php echo $br['balance'] >= 0 ? 'pos' : 'neg'; ?>" style="width:<?php echo $w; ?>%"></div>
+                    </div>
+                    <small class="<?php echo $br['balance'] >= 0 ? 'amount-pos' : 'amount-neg'; ?>">₹<?php echo number_format($br['balance'], 0); ?></small>
+                </div>
+            <?php endforeach; ?>
+        </div>
+
         <small>All data local SQLite DB (expenses.db) me store hai. Server = tumhara laptop / LAN only.</small>
     </div>
 
